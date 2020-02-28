@@ -26,6 +26,8 @@ try:
 except ImportError:
     print("ERROR - Cannot import NumPy module. Please visit http://www.numpy.org/\n")
     raise
+    
+# Get mathutils in from Blender and skip intermediate location handling
 from mathutils import Vector
 
 ###########
@@ -289,13 +291,13 @@ class State(object):
     minPos = None
     maxPos = None
     pos = None
-    scale = 1000
+    scale = 1000 # Blender standard is m which needs to be mm to match CNC format (not counting inches)
     spindleOn = True
     # The paths cut by the laser
     paths = None
-    # The units are inches by default
-    units = "in"
-    rapidSpeed = RAPID_SPEED_MM/25.4
+    # The units are mm by default
+    units = "mm"
+    rapidSpeed = RAPID_SPEED_MM
     # The list of not-implemented codes in self program
     unknownCodes = None
 
@@ -456,10 +458,10 @@ class State(object):
             # Constant surface speed
             pass
 
-        elif (st.code == "G21"):
-            # Programming in mm
-            self.units = "mm"
-            self.rapidSpeed = RAPID_SPEED_MM
+        elif (st.code == "G20"):
+            # Programming in inches
+            self.units = "in"
+            self.rapidSpeed = RAPID_SPEED_MM/25.4
 
         elif (st.code == "G90"):
             print("G90: absolute distance mode")
