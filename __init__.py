@@ -42,8 +42,9 @@ class VirtualCNC():
     program = None
     state = None
     curve = None
-    resolution = 0.1
+    resolution = 10
     message = "Initialized"
+    statement = "No codes yet"
     polyline = None
     finished = False
 
@@ -61,12 +62,8 @@ class VirtualCNC():
     def run_program(self):
         if self.program:
             self.state = self.program.start()
-            while not self.state.finished:
-                self.state.step()
-
-            self.lines = len(self.state.paths)
-            self.message = "Program loaded"
-            if self.debug: self.message += ", with debug"
+            self.state.scale = 1
+            self.message = "Loaded {} statements".format(len(self.program.statements))
                         
     def create_polyline(self):
         if not self.polyline:
@@ -76,7 +73,7 @@ class VirtualCNC():
             polyline = curve.splines.new('POLY')
             self.polyline = polyline
             CNCCurve = bpy.data.objects.new('CNCCurve', curve)
-            scn = bpy.context.scene
+            scn =  bpy.context.scene
             self.curve = CNCCurve
             bpy.context.scene.collection.objects.link(CNCCurve)
 
@@ -89,30 +86,33 @@ class VirtualCNC():
             self.polyline = None
 
     def draw_all(self):
+        scn = bpy.context.scene
         if self.finished:
             return
         while self.currentline != self.lines:
             self.draw_path()
+            dg = bpy.context.evaluated_depsgraph_get()
+            dg.update()
 
     def get_intermediates(self, path):
         if (isinstance(path, gcode.Line)):
-            nb_points = numpy.floor(path.length * self.resolution / path.feedRate)
-            if self.debug: print("Intermediate points: {}".format(nb_points))
-            if nb_points == 0:
-                nb_points = 1
+            nb_points = numpy.floor(path.length * (self.resolution * self.state.scale) / path.feedRate)
             # If we have 8 intermediate points, we have 8+1=9 spaces
             # between p1 and p2
             x_spacing = (path.end.x - path.start.x) / (nb_points + 1)
             y_spacing = (path.end.y - path.start.y) / (nb_points + 1)
+            z_spacing = (path.end.z - path.start.z) / (nb_points + 1)
 
-            return [Vector([path.start.x + i * x_spacing, path.start.y +  i * y_spacing, path.start.z])
+            return [Vector([path.start.x + i * x_spacing, 
+                            path.start.y + i * y_spacing, 
+                            path.start.z + i * z_spacing])
                 for i in range(1, int(nb_points)+1)]
 
         elif (isinstance(path, gcode.Arc)):
             angle1 = path.angle1
             angle2 = path.angle2
 
-            if (abs(angle2-angle1) > math.pi):
+            if (abs(angle2-angle1) >= math.pi):
                 if (angle1 < math.pi):
                     angle2 -= 2*math.pi
                 else:
@@ -121,33 +121,71 @@ class VirtualCNC():
             if (path.clockwise):
                 (angle1, angle2) = (angle2, angle1)
 
-            nb_points = numpy.floor(path.length * self.resolution / path.feedRate)
+            nb_points = numpy.floor(path.length * (self.resolution * self.state.scale) / path.feedRate)
             if nb_points == 0:
                 nb_points = 2
-            arc = (angle2 - angle1) / nb_points
+            arc = abs((angle2 - angle1)) / nb_points
+            if arc == float(0): return []
             points = []
-            for p in range(int(nb_points)+1):
-                if self.debug and path.clockwise: print("Clockwise Angle: {}".format(angle1 + (arc * p)))
-                if self.debug and not path.clockwise: print("Angle: {}".format(angle1 + (arc * p)))
-                if path.clockwise:
-                    px = path.center.x + (path.radius * math.cos(angle2 - (arc * p)))
-                    py = path.center.y + (path.radius * math.sin(angle2 - (arc * p)))
-                else:
+            for p in range(1, int(nb_points)):
+                if self.debug and path.clockwise: print("Clockwise Angle: {}, plane {}".format(angle1 + (arc * p), path.plane))
+                if self.debug and not path.clockwise: print("Angle: {}, plane {}".format(angle1 + (arc * p), path.plane))
+                if path.plane == "XY" and path.clockwise:
+                    px = path.center.x + (path.radius * math.sin(angle2 - (arc * p)))
+                    py = path.center.y + (path.radius * math.cos(angle2 - (arc * p)))
+                    pz = path.center.z
+                elif path.plane == "XY":
                     px = path.center.x + (path.radius * math.cos(angle1 + (arc * p)))
                     py = path.center.y + (path.radius * math.sin(angle1 + (arc * p)))
-                points.append(Vector([px,py,path.center.z]))
+                    pz = path.center.z
+                elif path.plane == "ZX" and path.clockwise:
+                    px = path.center.x + (path.radius * math.cos(angle1 + (arc * p)))
+                    py = path.center.y
+                    pz = path.center.z + (path.radius * math.sin(angle1 + (arc * p)))
+                elif path.plane == "ZX":
+                    px = path.center.x + (path.radius * math.sin(angle1 + (arc * p)))
+                    py = path.center.y
+                    pz = path.center.z + (path.radius * math.cos(angle1 + (arc * p)))
+                elif path.plane == "YZ" and path.clockwise:
+                    px = path.center.x
+                    py = path.center.y + (path.radius * math.sin(angle2 - (arc * p)))
+                    pz = path.center.z + (path.radius * math.cos(angle2 - (arc * p)))
+                elif path.plane == "YZ":
+                    px = path.center.x
+                    py = path.center.y + (path.radius * math.cos(angle1 + (arc * p)))
+                    pz = path.center.z + (path.radius * math.sin(angle1 + (arc * p)))
+                else:
+                    print("Unknown plane {}".format(self.plane))
+                points.append(Vector([px,py,pz]))
             return points
 
     def draw_path(self):
         if not self.polyline:
             self.create_polyline()
-        self.message = "Drawing path {}".format(self.currentline)
+        self.state.step()
+        if self.state.finished:
+            self.finished
+            self.message = "Completed, you have to reset"
+            return
+
+        try:
+            if self.debug: print("{}".format(self.program.statements[self.currentline]))
+            self.statement = "{} {}".format(self.program.statements[self.currentline].code, " ".join(self.program.statements[self.currentline].args))
+        except:
+            self.message = "{}".format(self.program.statements[self.currentline].command)
+
+        try: 
+            path = self.state.paths[self.currentline]
+            self.message = "Drawing path {}".format(self.currentline)
+            if self.debug: print(path)
+        except:
+            self.currentline += 1
+            return
         if self.finished:
             self.message = "Completed, you have to reset"
             return
-        path = self.state.paths[self.currentline]
         if isinstance(path, gcode.Line) and path.rapid: 
-            if self.debug: print("This is rapidline from {},{} to {},{}".format(path.start.x, path.start.y, path.end.x, path.end.y))
+            if self.debug: print("Rapidline from {},{},{} to {},{},{}".format(path.start.x, path.start.y, path.start.z, path.end.x, path.end.y, path.end.z))
         if (isinstance(path, gcode.Line)):
             self.polyline.points.add(1)
             self.polyline.points[-1].co = path.start.to_4d()
@@ -165,20 +203,21 @@ class VirtualCNC():
             self.location = path.end
 
         elif (isinstance(path, gcode.Arc)):
-            self.polyline.points.add(1)
-            self.polyline.points[-1].co = path.start.to_4d()
+            # self.polyline.points.add(1)
+            # self.polyline.points[-1].co = path.start.to_4d()
             self.location = path.start
             for point in self.get_intermediates(path):
                 nextpoint = Vector([point.x,point.y,point.z]).to_4d()
                 if nextpoint == path.start or nextpoint == path.end:
                     next
-                if self.debug: print("Line to {},{},{}".format(nextpoint.x,nextpoint.y,nextpoint.z))
+                if self.debug: print("Arc line to {},{},{}".format(nextpoint.x,nextpoint.y,nextpoint.z))
                 self.polyline.points.add(1)
                 self.polyline.points[-1].co = nextpoint
                 self.location = nextpoint
-            self.polyline.points.add(1)
-            self.polyline.points[-1].co = path.end.to_4d()
-            self.location = path.end
+            if self.location != path.start:
+                self.polyline.points.add(1)
+                self.polyline.points[-1].co = path.end.to_4d()
+                self.location = path.end
 
         else:        
             print("This class of path is not implemented")
@@ -211,6 +250,7 @@ class CNCOperator_OT_Modal(bpy.types.Operator):
         if event.type == 'TIMER':
             # change theme color, silly!
             ao = bpy.context.scene.objects[context.scene.CNCObject]
+            vcnc = bpy.types.Scene.VirtualCNC
             speed = context.scene.CNCSpeed
             if self.dir == 'up':
                 if ao.location.z < self.end:
@@ -254,6 +294,9 @@ class CNCOperator_OT_Modal(bpy.types.Operator):
                 else:
                     self.cancel(context)
                     return {'CANCELLED'}
+            elif self.dir == 'play':
+                vcnc.draw_path()
+                self.report({'INFO'}, "Line %s, statement: %s" % (vcnc.currentline, vcnc.statement))
             else:
                 self.cancel(context)
                 return {'CANCELLED'}
@@ -289,8 +332,11 @@ class CNCOperator_OT_Modal(bpy.types.Operator):
                 vcnc.reset()
                 return {'CANCELLED'}
             elif self.dir == 'play':
-                vcnc.draw_all()
-                return {'CANCELLED'} 
+                self.report({'INFO'}, "Line %s, statement: %s" % (vcnc.currentline, vcnc.statement))
+            elif self.dir == 'stop':
+                self.report({'INFO'}, "Stopping")
+                self.cancel(context)
+                return {'CANCELLED'}
             else:
                 return {'CANCELLED'}
         else: 
@@ -371,6 +417,8 @@ class CNCEMU_PT_Panel(bpy.types.Panel):
         box.operator("cnctool.mod", text="Reset").dir = 'reset' 
         row = box.row()
         box.operator("cnctool.mod", icon="PLAY", text="").dir = 'play' 
+        row = box.row()
+        box.operator("cnctool.mod", icon="PAUSE", text="").dir = 'stop' 
 
         row = box.row()
         layout.separator() #Get some space
@@ -400,9 +448,12 @@ class CNCEMU_PT_Panel(bpy.types.Panel):
         row = box.row()
         row.label(text="Loaded: %s paths" % vcnc.lines)
         row = box.row()
-        row = box.row()
         row.prop(scene, "CNCDebug")
+        row = box.row()
         box.label(text="%s" % vcnc.message)
+        row = box.row()
+        box.label(text="%s" % vcnc.statement)
+        row = box.row()
 
 classlist = [ CNCEMU_PT_Panel, 
               CNCOperator_OT_Modal,

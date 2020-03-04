@@ -50,6 +50,7 @@ RAPID_SPEED_MM = 25.0
 
 def parse_program(path):
     fd = open(path, "r")
+    lastG = None
 
     prog = Program()
     while 1:
@@ -104,6 +105,12 @@ def parse_program(path):
                     prog.invalidLines.append(line)
                     continue
                 code = "%s%02d" % (letter, num)
+                lastG = code
+
+            else:
+                if (code.startswith("X") or code.startswith("Y") or code.startswith("Z")):
+                    args = [code] + args[0:]
+                    code = lastG
 
             statement.code = code
             statement.args = args
@@ -194,6 +201,10 @@ class Statement(object):
         self.code = ""
         self.params = {}
 
+    def __repr__(self):
+        template = '{0.__class__.__name__}({0.command}, {0.code}, {0.args}, {0.params})'
+        return template.format(self)
+
 # A path plotting out by the cutting head
 class Path(object):
     # Whether the spindle is on/off when tracing self path
@@ -237,21 +248,34 @@ class Arc(Path):
     end = None
     radius = 0
     diff = 0
+    plane = "XY"
 
-    def __init__(self, start, end, center, feedRate, clockwise=True):
+    def __init__(self, start, end, center, feedRate, clockwise=True, plane="XY"):
         self.start = start.copy()
         self.end = end.copy()
         self.center = center.copy()
         self.feedRate = feedRate
         self.clockwise = clockwise
+        self.plane = plane
 
         u = self.start - self.center
         v = self.end - self.center
 
         self.radius = numpy.linalg.norm(u)
-
-        self.angle1 = math.atan2(u[1], u[0])
-        self.angle2 = math.atan2(v[1], v[0])
+        
+        if self.plane == "XY":
+            self.angle1 = math.atan2(u.y, u.x)
+            self.angle2 = math.atan2(v.y, v.x)
+        elif self.plane == "ZX":
+            if clockwise:
+                self.angle1 = math.atan2(u.z, u.x) 
+                self.angle2 = math.atan2(v.z, v.x) 
+            else:
+                self.angle1 = math.atan2(u.x, u.z) 
+                self.angle2 = math.atan2(v.x, v.z) 
+        elif self.plane == "YZ":
+            self.angle1 = math.atan2(u.x, u.z)
+            self.angle2 = math.atan2(v.x, v.z)
 
         if (self.angle1 < 0): self.angle1 += 2*math.pi
         if (self.angle2 < 0): self.angle2 += 2*math.pi
@@ -259,13 +283,14 @@ class Arc(Path):
         diff = abs(self.angle1-self.angle2)
         if (diff > math.pi): 
             diff = 2*math.pi - diff
+
         self.diff = diff
         self.length = self.radius * diff
         self.duration = self.length/float(self.feedRate)
 
     def __repr__(self):
         template = ('{0.__class__.__name__}({0.start}, {0.end}, {0.center}, '
-                    '{0.feedRate}, {0.clockwise})')
+                    '{0.feedRate}, {0.clockwise}, {0.plane})')
         return template.format(self)
 
 class ToolChange(Path):
@@ -290,6 +315,7 @@ class State(object):
     time = 0
     minPos = None
     maxPos = None
+    plane = "XY"
     pos = None
     scale = 1000 # Blender standard is m which needs to be mm to match CNC format (not counting inches)
     spindleOn = True
@@ -304,10 +330,18 @@ class State(object):
     def __init__(self, program):
         self.variables = {}
         self.program = program
-        self.paths = []
+        self.paths = {}
         # Note it is important to pass floats to make self a float array (otherwise it uses ints)
         self.pos = Vector([0.0, 0.0, 0.0])
         self.unknownCodes = []
+
+    def reset(self):
+        self.variables = {}
+        self.paths = {}
+        # Note it is important to pass floats to make self a float array (otherwise it uses ints)
+        self.pos = Vector([0.0, 0.0, 0.0])
+        self.unknownCodes = []
+        self.lineno = 0
 
     # Returns the length of the job
     def get_run_length(self):
@@ -410,7 +444,7 @@ class State(object):
                 line.spindleOn = self.spindleOn
                 line.rapid = (st.code == "G00")
                 line.statement = st
-                self.paths.append(line)
+                self.paths[self.lineno] = line
                 # Advance the timeline
                 self.time += line.duration
                 # Jump to the end position
@@ -430,15 +464,19 @@ class State(object):
             if "X" in params: end.x = params["X"]/self.scale
             if "Y" in params: end.y = params["Y"]/self.scale
             if "Z" in params: end.z = params["Z"]/self.scale
-
+            i = params["I"]/self.scale if "I" in params else 0
+            j = params["J"]/self.scale if "J" in params else 0
+            k = params["K"]/self.scale if "K" in params else 0
+            
             if (self.spindleOn):
-                center = Vector([self.pos.x + params["I"]/self.scale, self.pos.y + params["J"]/self.scale, self.pos.z])
+                center = self.pos + Vector([i,j,k])
+                # center = Vector([self.pos.x + i, self.pos.y + j, self.pos.z + k])
 
-                arc = Arc(self.pos, end, center, self.feedRate, clockwise=(st.code=="G02"))
+                arc = Arc(self.pos, end, center, self.feedRate, clockwise=(st.code=="G02"), plane=self.plane)
                 arc.startTime = self.time
                 arc.spindleOn = self.spindleOn
                 arc.statement = st
-                self.paths.append(arc)
+                self.paths[self.lineno] = arc
                 # Advance the timeline
                 self.time += arc.duration
 
@@ -458,6 +496,10 @@ class State(object):
             # Constant surface speed
             pass
 
+        elif (st.code == "G21"):
+            # Assumed to be in mm
+            pass
+
         elif (st.code == "G20"):
             # Programming in inches
             self.units = "in"
@@ -467,21 +509,32 @@ class State(object):
             print("G90: absolute distance mode")
 
         elif (st.code == "G17"):
-            # Define the XY plane
-            pass
+            print("G17: Switching to XY plane")
+            # Switch to XY plane selection
+            self.plane = "XY"
+
+        elif (st.code == "G18"):
+            print("G18: Switching to ZX plane")
+            # Switch to ZX plane selection
+            self.plane = "ZX"
+
+        elif (st.code == "G19"):
+            print("G19: Switching to YZ plane")
+            # Switch to YZ plane selection
+            self.plane = "YZ"
 
         elif (st.code.startswith("F")):
             # Feed rate definition
             rate = self.eval_expression(st.code[1:])
             self.feedRate = float(rate)
 
-        elif (st.code == "M06"):
+        elif (st.code == "M06" or st.code == "M6"):
             # Tool change operation
             change = ToolChange()
             change.duration = 3
             change.startTime = self.time
             change.statement = st
-            self.paths.append(change)
+            self.paths[self.lineno] = change
             self.time += change.duration
 
         elif (st.code.startswith("T")):
@@ -495,7 +548,7 @@ class State(object):
             dwell.startTime = self.time
             dwell.statement = st
             dwell.duration = params.get("P", 0)
-            self.paths.append(dwell)
+            self.paths[self.lineno] = dwell
             self.time += dwell.duration
 
         else:
@@ -505,7 +558,11 @@ class State(object):
 
     def step(self):
         # Execute the current statement
-        st = self.program.statements[self.lineno]
+        try:
+            st = self.program.statements[self.lineno]
+        except IndexError:
+            self.finished = True
+            return False
         self.handle_statement(st)
 
         # Increment to the next statement
