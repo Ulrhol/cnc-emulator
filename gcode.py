@@ -1,6 +1,7 @@
 # Python G-Code simulator
 #
-# Copyright (C) 2011 Peter Rogers
+# Copyright (C) 2011-2020 Peter Rogers
+# Copyright (C) 2020 Ulrik Holmen
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
