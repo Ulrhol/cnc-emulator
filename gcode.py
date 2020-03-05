@@ -110,6 +110,7 @@ def parse_program(path):
 
             else:
                 if (code.startswith("X") or code.startswith("Y") or code.startswith("Z")):
+                    # Continuation, some gcode doesn't reiterate the command if next line is the same
                     args = [code] + args[0:]
                     code = lastG
 
