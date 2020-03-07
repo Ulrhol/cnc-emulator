@@ -38,11 +38,12 @@ class VirtualCNC():
     location = Vector([0,0,0])
     lines = 0
     debug = False
+    MoveObject = False
     currentline = 0
     program = None
     state = None
     curve = None
-    resolution = 10
+    resolution = 5
     message = "Initialized"
     statement = "No codes yet"
     polyline = None
@@ -52,12 +53,17 @@ class VirtualCNC():
         self.filename = None
 
     def load_program(self):
+        self.MoveObject = bpy.context.scene.MoveObject
         self.debug = bpy.context.scene.CNCDebug
         if self.filename:
             self.program = gcode.parse_program(self.filename)
             self.run_program()
         else:
             self.message = "No filename"
+        scn =  bpy.context.scene
+        self.CNCObject = bpy.context.scene.objects[scn.CNCObject]
+        if self.CNCObject:
+            self.statement = "Using {} as object".format(self.CNCObject)
 
     def run_program(self):
         if self.program:
@@ -97,8 +103,6 @@ class VirtualCNC():
     def get_intermediates(self, path):
         if (isinstance(path, gcode.Line)):
             nb_points = numpy.floor(path.length * (self.resolution * self.state.scale) / path.feedRate)
-            # If we have 8 intermediate points, we have 8+1=9 spaces
-            # between p1 and p2
             x_spacing = (path.end.x - path.start.x) / (nb_points + 1)
             y_spacing = (path.end.y - path.start.y) / (nb_points + 1)
             z_spacing = (path.end.z - path.start.z) / (nb_points + 1)
@@ -118,8 +122,8 @@ class VirtualCNC():
                 else:
                     angle2 += 2*math.pi
 
-            if (path.clockwise):
-                (angle1, angle2) = (angle2, angle1)
+            #if (path.clockwise):
+            #    (angle1, angle2) = (angle2, angle1)
 
             nb_points = numpy.floor(path.length * (self.resolution * self.state.scale) / path.feedRate)
             if nb_points == 0:
@@ -127,31 +131,24 @@ class VirtualCNC():
             arc = abs((angle2 - angle1)) / nb_points
             if arc == float(0): return []
             points = []
+            (px, py, pz) = path.center
             for p in range(1, int(nb_points)):
-                if self.debug and path.clockwise: print("Clockwise Angle: {}, plane {}".format(angle1 + (arc * p), path.plane))
-                if self.debug and not path.clockwise: print("Angle: {}, plane {}".format(angle1 + (arc * p), path.plane))
                 if path.plane == "XY" and path.clockwise:
-                    px = path.center.x + (path.radius * math.sin(angle2 - (arc * p)))
-                    py = path.center.y + (path.radius * math.cos(angle2 - (arc * p)))
-                    pz = path.center.z
-                elif path.plane == "XY":
                     px = path.center.x + (path.radius * math.cos(angle1 + (arc * p)))
                     py = path.center.y + (path.radius * math.sin(angle1 + (arc * p)))
-                    pz = path.center.z
-                elif path.plane == "ZX" and path.clockwise:
-                    px = path.center.x + (path.radius * math.cos(angle1 + (arc * p)))
-                    py = path.center.y
-                    pz = path.center.z + (path.radius * math.sin(angle1 + (arc * p)))
-                elif path.plane == "ZX":
+                elif path.plane == "XY":
                     px = path.center.x + (path.radius * math.sin(angle1 + (arc * p)))
-                    py = path.center.y
+                    py = path.center.y + (path.radius * math.cos(angle1 + (arc * p)))
+                elif path.plane == "ZX" and path.clockwise:
+                    pz = path.center.z + (path.radius * math.sin(angle1 + (arc * p)))
+                    px = path.center.x + (path.radius * math.cos(angle1 + (arc * p)))
+                elif path.plane == "ZX":
                     pz = path.center.z + (path.radius * math.cos(angle1 + (arc * p)))
+                    px = path.center.x + (path.radius * math.sin(angle1 + (arc * p)))
                 elif path.plane == "YZ" and path.clockwise:
-                    px = path.center.x
-                    py = path.center.y + (path.radius * math.sin(angle2 - (arc * p)))
-                    pz = path.center.z + (path.radius * math.cos(angle2 - (arc * p)))
+                    py = path.center.y + (path.radius * math.sin(angle1 + (arc * p)))
+                    pz = path.center.z + (path.radius * math.cos(angle1 + (arc * p)))
                 elif path.plane == "YZ":
-                    px = path.center.x
                     py = path.center.y + (path.radius * math.cos(angle1 + (arc * p)))
                     pz = path.center.z + (path.radius * math.sin(angle1 + (arc * p)))
                 else:
@@ -187,19 +184,26 @@ class VirtualCNC():
         if isinstance(path, gcode.Line) and path.rapid: 
             if self.debug: print("Rapidline from {},{},{} to {},{},{}".format(path.start.x, path.start.y, path.start.z, path.end.x, path.end.y, path.end.z))
         if (isinstance(path, gcode.Line)):
-            self.polyline.points.add(1)
-            self.polyline.points[-1].co = path.start.to_4d()
+            if not self.MoveObject:
+                self.polyline.points.add(1)
+                self.polyline.points[-1].co = path.start.to_4d()
             self.location = path.start
             for point in self.get_intermediates(path):
                 nextpoint = Vector([point.x,point.y,point.z]).to_4d()
                 if nextpoint == path.start or nextpoint == path.end:
                     next
                 if self.debug: print("Line to {},{},{}".format(nextpoint.x,nextpoint.y,nextpoint.z))
-                self.polyline.points.add(1)
-                self.polyline.points[-1].co = nextpoint
+                if self.MoveObject:
+                    self.CNCObject.location = (nextpoint.x, nextpoint.y, nextpoint.z)
+                else:
+                    self.polyline.points.add(1)
+                    self.polyline.points[-1].co = nextpoint
                 self.location = nextpoint
-            self.polyline.points.add(1)
-            self.polyline.points[-1].co = path.end.to_4d()
+            if self.MoveObject:
+                self.CNCObject.location = path.end
+            else:
+                self.polyline.points.add(1)
+                self.polyline.points[-1].co = path.end.to_4d()
             self.location = path.end
 
         elif (isinstance(path, gcode.Arc)):
@@ -228,6 +232,7 @@ class VirtualCNC():
     def reset(self):
         self.delete_polyline()
         self.currentline = 0
+        self.state.lineno = 0
         self.finished = False
 
 # CNC Operator
@@ -351,7 +356,9 @@ class CNCOperator_OT_Modal(bpy.types.Operator):
         self.dir = 'stop'
         self.report({'INFO'}, "Dir: %s" % self.dir)
         wm = context.window_manager
-        wm.event_timer_remove(self._timer)
+        if self._timer:
+            wm.event_timer_remove(self._timer)
+        return {'CANCELLED'}
 
 # File browser
 class OT_TestOpenFilebrowser(bpy.types.Operator, ImportHelper): 
@@ -396,22 +403,25 @@ class CNCEMU_PT_Panel(bpy.types.Panel):
         #default label and operator
         row = layout.row()
         row.label(text="CNC Emulator", icon='PREFERENCES')
-
-        # layout.separator() #Get some space
-
         box = layout.box()#put something in a box
-        box.label(text="Manual CNC Operation")
         row = box.row()
-        box.operator("cnctool.mod", icon="TRIA_UP", text='').dir = 'fwd'
-        row = box.row()
-        split = box.split(factor=0.5)
-        split.operator("cnctool.mod", icon="TRIA_LEFT", text='').dir = 'left' 
-        split.operator("cnctool.mod", icon="TRIA_RIGHT", text="").dir = 'right' 
-        row = box.row()
-        box.operator("cnctool.mod", icon="TRIA_DOWN", text='').dir = 'bwd'
-        row = box.row()
-        box.operator("cnctool.mod", text="Up").dir = 'up'
-        box.operator("cnctool.mod", text="Down").dir = 'down' 
+        row.prop(obj, "expanded",
+            icon="TRIA_DOWN" if obj.expanded else "TRIA_RIGHT",
+            icon_only=False, emboss=False
+        )
+        row.label(text="Manual CNC operation")
+        if obj.expanded:
+            box.operator("cnctool.mod", icon="TRIA_UP", text='').dir = 'fwd'
+            row = box.row()
+            split = box.split(factor=0.5)
+            split.operator("cnctool.mod", icon="TRIA_LEFT", text='').dir = 'left' 
+            split.operator("cnctool.mod", icon="TRIA_RIGHT", text="").dir = 'right' 
+            row = box.row()
+            box.operator("cnctool.mod", icon="TRIA_DOWN", text='').dir = 'bwd'
+            row = box.row()
+            box.operator("cnctool.mod", text="Up").dir = 'up'
+            box.operator("cnctool.mod", text="Down").dir = 'down' 
+        box = layout.box()#put something in a box
         row = box.row()
         box.operator("cnctool.mod", text="Next").dir = 'next' 
         box.operator("cnctool.mod", text="Reset").dir = 'reset' 
@@ -443,6 +453,9 @@ class CNCEMU_PT_Panel(bpy.types.Panel):
         row.label(text="Z Location: %s" % vcnc.location.z)
         row = box.row()
         layout.separator() #Get some space
+        row.prop(scene, "MoveObject")
+        row = box.row()
+        vcnc = bpy.types.Scene.VirtualCNC
         row = box.row()
         box.operator("cnctool.open_filebrowser", icon="FILE", text="Load file")
         row = box.row()
@@ -465,6 +478,7 @@ def register():
         bpy.utils.register_class(cls)
     bpy.types.Scene.VirtualCNC = VirtualCNC()
     bpy.types.Scene.CNCObject = bpy.props.StringProperty()
+    bpy.types.Scene.MoveObject = bpy.props.BoolProperty(name="Move object", default=False)
     bpy.types.Scene.XYStep = bpy.props.FloatProperty(name = "XY Step", default=0.1, min=0.0001, max=10)
     bpy.types.Scene.ZStep = bpy.props.FloatProperty(name = "Z Step", default=0.1, min=0.0001, max=10)
     bpy.types.Scene.CNCSpeed = bpy.props.FloatProperty(name = "CNC Speed", default=0.1, min=0.0001, max=10)

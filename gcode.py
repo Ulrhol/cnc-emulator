@@ -266,8 +266,12 @@ class Arc(Path):
         self.radius = numpy.linalg.norm(u)
         
         if self.plane == "XY":
-            self.angle1 = math.atan2(u.y, u.x)
-            self.angle2 = math.atan2(v.y, v.x)
+            if clockwise:
+                self.angle1 = math.atan2(u.y, u.x)
+                self.angle2 = math.atan2(v.y, v.x)
+            else:
+                self.angle1 = math.atan2(u.x, u.y)
+                self.angle2 = math.atan2(v.x, v.y)
         elif self.plane == "ZX":
             if clockwise:
                 self.angle1 = math.atan2(u.z, u.x) 
@@ -276,8 +280,13 @@ class Arc(Path):
                 self.angle1 = math.atan2(u.x, u.z) 
                 self.angle2 = math.atan2(v.x, v.z) 
         elif self.plane == "YZ":
-            self.angle1 = math.atan2(u.x, u.z)
-            self.angle2 = math.atan2(v.x, v.z)
+            if clockwise:
+                self.angle1 = math.atan2(u.y, u.z)
+                self.angle2 = math.atan2(v.y, v.z)
+            else:
+                self.angle1 = math.atan2(u.z, u.y)
+                self.angle2 = math.atan2(v.z, v.y)
+
 
         if (self.angle1 < 0): self.angle1 += 2*math.pi
         if (self.angle2 < 0): self.angle2 += 2*math.pi
