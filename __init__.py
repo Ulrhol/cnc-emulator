@@ -116,15 +116,7 @@ class VirtualCNC():
             angle1 = path.angle1
             angle2 = path.angle2
 
-            if (abs(angle2-angle1) >= math.pi):
-                if (angle1 < math.pi):
-                    angle2 -= 2*math.pi
-                else:
-                    angle2 += 2*math.pi
-
-            #if (path.clockwise):
-            #    (angle1, angle2) = (angle2, angle1)
-
+            # Calculate points along the arc
             nb_points = numpy.floor(path.length * (self.resolution * self.state.scale) / path.feedRate)
             if nb_points == 0:
                 nb_points = 2
@@ -184,7 +176,9 @@ class VirtualCNC():
         if isinstance(path, gcode.Line) and path.rapid: 
             if self.debug: print("Rapidline from {},{},{} to {},{},{}".format(path.start.x, path.start.y, path.start.z, path.end.x, path.end.y, path.end.z))
         if (isinstance(path, gcode.Line)):
-            if not self.MoveObject:
+            if self.MoveObject:
+                self.CNCObject.location = path.start
+            else:
                 self.polyline.points.add(1)
                 self.polyline.points[-1].co = path.start.to_4d()
             self.location = path.start
@@ -194,7 +188,7 @@ class VirtualCNC():
                     next
                 if self.debug: print("Line to {},{},{}".format(nextpoint.x,nextpoint.y,nextpoint.z))
                 if self.MoveObject:
-                    self.CNCObject.location = (nextpoint.x, nextpoint.y, nextpoint.z)
+                    self.CNCObject.location = nextpoint.to_3d()
                 else:
                     self.polyline.points.add(1)
                     self.polyline.points[-1].co = nextpoint
@@ -207,20 +201,24 @@ class VirtualCNC():
             self.location = path.end
 
         elif (isinstance(path, gcode.Arc)):
-            # self.polyline.points.add(1)
-            # self.polyline.points[-1].co = path.start.to_4d()
             self.location = path.start
             for point in self.get_intermediates(path):
                 nextpoint = Vector([point.x,point.y,point.z]).to_4d()
                 if nextpoint == path.start or nextpoint == path.end:
                     next
                 if self.debug: print("Arc line to {},{},{}".format(nextpoint.x,nextpoint.y,nextpoint.z))
-                self.polyline.points.add(1)
-                self.polyline.points[-1].co = nextpoint
+                if self.MoveObject:
+                    self.CNCObject.location = nextpoint.to_3d()
+                else:
+                    self.polyline.points.add(1)
+                    self.polyline.points[-1].co = nextpoint
                 self.location = nextpoint
             if self.location != path.start:
-                self.polyline.points.add(1)
-                self.polyline.points[-1].co = path.end.to_4d()
+                if self.MoveObject:
+                    self.CNCObject.location = nextpoint.to_3d()
+                else:
+                    self.polyline.points.add(1)
+                    self.polyline.points[-1].co = path.end.to_4d()
                 self.location = path.end
 
         else:        
@@ -407,7 +405,7 @@ class CNCEMU_PT_Panel(bpy.types.Panel):
         row = box.row()
         row.prop(obj, "expanded",
             icon="TRIA_DOWN" if obj.expanded else "TRIA_RIGHT",
-            icon_only=False, emboss=False
+            icon_only=True, emboss=False
         )
         row.label(text="Manual CNC operation")
         if obj.expanded:

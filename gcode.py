@@ -294,6 +294,10 @@ class Arc(Path):
         diff = abs(self.angle1-self.angle2)
         if (diff > math.pi): 
             diff = 2*math.pi - diff
+            if (self.angle1 < math.pi):
+                self.angle2 -= 2*math.pi
+            else:
+                self.angle2 += 2*math.pi
 
         self.diff = diff
         self.length = self.radius * diff
