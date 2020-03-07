@@ -477,6 +477,7 @@ def register():
     for cls in classlist:
         bpy.utils.register_class(cls)
     bpy.types.Scene.VirtualCNC = VirtualCNC()
+    bpy.types.Object.expanded = bpy.props.BoolProperty(name="expanded", default=False)
     bpy.types.Scene.CNCObject = bpy.props.StringProperty()
     bpy.types.Scene.MoveObject = bpy.props.BoolProperty(name="Move object", default=False)
     bpy.types.Scene.XYStep = bpy.props.FloatProperty(name = "XY Step", default=0.1, min=0.0001, max=10)
