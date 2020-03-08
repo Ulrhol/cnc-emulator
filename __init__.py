@@ -41,6 +41,7 @@ class VirtualCNC():
     MoveObject = False
     currentline = 0
     program = None
+    offset = Vector([0,0,0])
     state = None
     curve = None
     resolution = 5
@@ -60,15 +61,17 @@ class VirtualCNC():
             self.run_program()
         else:
             self.message = "No filename"
-        scn =  bpy.context.scene
-        self.CNCObject = bpy.context.scene.objects[scn.CNCObject]
+        self.CNCObject = bpy.context.scene.objects[bpy.context.scene.CNCObject]
         if self.CNCObject:
             self.statement = "Using {} as object".format(self.CNCObject)
 
     def run_program(self):
         if self.program:
             self.state = self.program.start()
-            self.state.scale = 1
+            self.state.scale = bpy.context.scene.CNCScale
+            self.currentline = 0
+            self.state.lineno = 0
+            self.finished = False
             self.message = "Loaded {} statements".format(len(self.program.statements))
                         
     def create_polyline(self):
@@ -96,7 +99,7 @@ class VirtualCNC():
         if self.finished:
             return
         while self.currentline != self.lines:
-            self.draw_path()
+            self.layout_path()
             dg = bpy.context.evaluated_depsgraph_get()
             dg.update()
 
@@ -104,22 +107,25 @@ class VirtualCNC():
         if (isinstance(path, gcode.Line)):
             nb_points = numpy.floor(path.length * (self.resolution * self.state.scale) / path.feedRate)
             x_spacing = (path.end.x - path.start.x) / (nb_points + 1)
-            y_spacing = (path.end.y - path.start.y) / (nb_points + 1)
+            y_spacing = (path.end.y - path.start.y) / (nb_points + 1) 
             z_spacing = (path.end.z - path.start.z) / (nb_points + 1)
 
             return [Vector([path.start.x + i * x_spacing, 
                             path.start.y + i * y_spacing, 
                             path.start.z + i * z_spacing])
-                for i in range(1, int(nb_points)+1)]
+                for i in range(1, int(nb_points + 1))]
 
         elif (isinstance(path, gcode.Arc)):
             angle1 = path.angle1
             angle2 = path.angle2
 
-            # Calculate points along the arc
+            # Calculate nr of points needed along the arc
             nb_points = numpy.floor(path.length * (self.resolution * self.state.scale) / path.feedRate)
+
+            # Make sure there is at least 2 points in the arc
             if nb_points == 0:
                 nb_points = 2
+
             arc = abs((angle2 - angle1)) / nb_points
             if arc == float(0): return []
             points = []
@@ -148,21 +154,36 @@ class VirtualCNC():
                 points.append(Vector([px,py,pz]))
             return points
 
-    def draw_path(self):
+    def move_object(self, location):
+        adapted_location = self.location.to_3d() + self.offset.to_3d()
+        self.CNCObject.location = adapted_location
+
+    def draw_line(self, location):
         if not self.polyline:
             self.create_polyline()
+        adapted_location = self.location.to_3d() + self.offset.to_3d()
+        self.polyline.points.add(1)
+        self.polyline.points[-1].co = adapted_location.to_4d()
+
+    def layout_path(self):
+
+        # Progress the parsing and get next statement
         self.state.step()
+
+        # If this was the last statement just return
         if self.state.finished:
             self.finished
             self.message = "Completed, you have to reset"
             return
 
+        # Show statement before executing
         try:
             if self.debug: print("{}".format(self.program.statements[self.currentline]))
             self.statement = "{} {}".format(self.program.statements[self.currentline].code, " ".join(self.program.statements[self.currentline].args))
         except:
             self.message = "{}".format(self.program.statements[self.currentline].command)
 
+        # If this contains a path, progress
         try: 
             path = self.state.paths[self.currentline]
             self.message = "Drawing path {}".format(self.currentline)
@@ -170,57 +191,50 @@ class VirtualCNC():
         except:
             self.currentline += 1
             return
+
         if self.finished:
             self.message = "Completed, you have to reset"
             return
-        if isinstance(path, gcode.Line) and path.rapid: 
-            if self.debug: print("Rapidline from {},{},{} to {},{},{}".format(path.start.x, path.start.y, path.start.z, path.end.x, path.end.y, path.end.z))
+
+        # 
         if (isinstance(path, gcode.Line)):
             if self.MoveObject:
-                self.CNCObject.location = path.start
+                self.move_object(path.start)
             else:
-                self.polyline.points.add(1)
-                self.polyline.points[-1].co = path.start.to_4d()
+                self.draw_line(path.start)
             self.location = path.start
-            for point in self.get_intermediates(path):
-                nextpoint = Vector([point.x,point.y,point.z]).to_4d()
+            for nextpoint in self.get_intermediates(path):
                 if nextpoint == path.start or nextpoint == path.end:
                     next
                 if self.debug: print("Line to {},{},{}".format(nextpoint.x,nextpoint.y,nextpoint.z))
                 if self.MoveObject:
-                    self.CNCObject.location = nextpoint.to_3d()
+                    self.move_object(nextpoint)
                 else:
-                    self.polyline.points.add(1)
-                    self.polyline.points[-1].co = nextpoint
+                    self.draw_line(nextpoint)
                 self.location = nextpoint
             if self.MoveObject:
-                self.CNCObject.location = path.end
+                self.move_object(path.end)
             else:
-                self.polyline.points.add(1)
-                self.polyline.points[-1].co = path.end.to_4d()
+                self.draw_line(path.end)
             self.location = path.end
 
         elif (isinstance(path, gcode.Arc)):
             self.location = path.start
-            for point in self.get_intermediates(path):
-                nextpoint = Vector([point.x,point.y,point.z]).to_4d()
+            for nextpoint in self.get_intermediates(path):
                 if nextpoint == path.start or nextpoint == path.end:
                     next
                 if self.debug: print("Arc line to {},{},{}".format(nextpoint.x,nextpoint.y,nextpoint.z))
                 if self.MoveObject:
-                    self.CNCObject.location = nextpoint.to_3d()
+                    self.move_object(nextpoint)
                 else:
-                    self.polyline.points.add(1)
-                    self.polyline.points[-1].co = nextpoint
+                    self.draw_line(nextpoint)
                 self.location = nextpoint
             if self.location != path.start:
                 if self.MoveObject:
-                    self.CNCObject.location = nextpoint.to_3d()
+                    self.move_object(nextpoint)
                 else:
-                    self.polyline.points.add(1)
-                    self.polyline.points[-1].co = path.end.to_4d()
+                    self.draw_line(nextpoint)
                 self.location = path.end
-
         else:        
             print("This class of path is not implemented")
         self.currentline += 1
@@ -228,10 +242,12 @@ class VirtualCNC():
             self.finished = True
 
     def reset(self):
+        self.offset = Vector([self.CNCObject.location.x, self.CNCObject.location.y, self.CNCObject.location.z])
         self.delete_polyline()
         self.currentline = 0
         self.state.lineno = 0
         self.finished = False
+        self.statement = "Offset: {}, {}, {}".format(self.offset.x, self.offset.y, self.offset.y)
 
 # CNC Operator
 class CNCOperator_OT_Modal(bpy.types.Operator):
@@ -260,6 +276,8 @@ class CNCOperator_OT_Modal(bpy.types.Operator):
                     ao.location.z += speed
                     self.report({'INFO'}, "Dir %s, Current Z: %s" % (self.dir, ao.location.z))
                 else:
+                    ao.location.z = self.end
+                    vcnc.location.z = ao.location.z
                     self.cancel(context)
                     return {'CANCELLED'}
             elif self.dir == 'down': 
@@ -267,6 +285,8 @@ class CNCOperator_OT_Modal(bpy.types.Operator):
                     ao.location.z -= speed
                     self.report({'INFO'}, "Dir %s, Current Z: %s" % (self.dir, ao.location.z))
                 else:
+                    ao.location.z = self.end
+                    vcnc.location.z = ao.location.z
                     self.cancel(context)
                     return {'CANCELLED'}
             elif self.dir == 'left': 
@@ -274,6 +294,8 @@ class CNCOperator_OT_Modal(bpy.types.Operator):
                     ao.location.y += speed
                     self.report({'INFO'}, "Dir %s, Current Y: %s" % (self.dir, ao.location.y))
                 else:
+                    ao.location.y = self.end
+                    vcnc.location.y = ao.location.y
                     self.cancel(context)
                     return {'CANCELLED'}
             elif self.dir == 'right': 
@@ -281,6 +303,8 @@ class CNCOperator_OT_Modal(bpy.types.Operator):
                     ao.location.y -= speed
                     self.report({'INFO'}, "Dir %s, Current Y: %s" % (self.dir, ao.location.y))
                 else:
+                    ao.location.y = self.end
+                    vcnc.location.y = ao.location.y
                     self.cancel(context)
                     return {'CANCELLED'}
             elif self.dir == 'fwd': 
@@ -288,6 +312,8 @@ class CNCOperator_OT_Modal(bpy.types.Operator):
                     ao.location.x += speed
                     self.report({'INFO'}, "Dir %s, Current X: %s" % (self.dir, ao.location.x))
                 else:
+                    ao.location.x = self.end
+                    vcnc.location.x = ao.location.x
                     self.cancel(context)
                     return {'CANCELLED'}
             elif self.dir == 'bwd': 
@@ -295,10 +321,12 @@ class CNCOperator_OT_Modal(bpy.types.Operator):
                     ao.location.x -= speed
                     self.report({'INFO'}, "Dir %s, Current X: %s" % (self.dir, ao.location.x))
                 else:
+                    ao.location.x = self.end
+                    vcnc.location.x = ao.location.x
                     self.cancel(context)
                     return {'CANCELLED'}
             elif self.dir == 'play':
-                vcnc.draw_path()
+                vcnc.layout_path()
                 self.report({'INFO'}, "Line %s, statement: %s" % (vcnc.currentline, vcnc.statement))
             else:
                 self.cancel(context)
@@ -329,7 +357,7 @@ class CNCOperator_OT_Modal(bpy.types.Operator):
                 self.end = ao.location.x - bpy.context.scene.XYStep
                 self.report({'INFO'}, "Dir: %s, Goal X: %s" % (self.dir, self.end) )
             elif self.dir == 'next':
-                vcnc.draw_path() 
+                vcnc.layout_path() 
                 return {'CANCELLED'}
             elif self.dir == 'reset':
                 vcnc.reset()
@@ -453,13 +481,13 @@ class CNCEMU_PT_Panel(bpy.types.Panel):
         layout.separator() #Get some space
         row.prop(scene, "MoveObject")
         row = box.row()
-        vcnc = bpy.types.Scene.VirtualCNC
-        row = box.row()
         box.operator("cnctool.open_filebrowser", icon="FILE", text="Load file")
         row = box.row()
         row.label(text="Loaded: %s paths" % vcnc.lines)
         row = box.row()
         row.prop(scene, "CNCDebug")
+        row = box.row()
+        row.prop(scene, "CNCScale")
         row = box.row()
         box.label(text="%s" % vcnc.message)
         row = box.row()
@@ -481,6 +509,7 @@ def register():
     bpy.types.Scene.XYStep = bpy.props.FloatProperty(name = "XY Step", default=0.1, min=0.0001, max=10)
     bpy.types.Scene.ZStep = bpy.props.FloatProperty(name = "Z Step", default=0.1, min=0.0001, max=10)
     bpy.types.Scene.CNCSpeed = bpy.props.FloatProperty(name = "CNC Speed", default=0.1, min=0.0001, max=10)
+    bpy.types.Scene.CNCScale = bpy.props.FloatProperty(name = "CNC Scale", default=1000, min=1, max=1000)
     bpy.types.Scene.CNCDebug = bpy.props.BoolProperty(name = "debug", default=False)
 
     
